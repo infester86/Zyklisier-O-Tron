@@ -1,164 +1,86 @@
-import easy_scpi as scpi 
-import time, os, logging
-from datetime import datetime
 
-#def logconfig():
-#logging.basicConfig(filename='aaa.log', encoding='utf-8', level=logging.INFO)
-
-
-# SCPI Verbindung Herstellen
-inst = scpi.Instrument('COM4')
-inst.connect()
-
-# Befehle
-# Output An/Aus: inst.write('OUTP ON') / inst.write('OUTP OFF')
-# Messen: inst.query('MEAS:VOLT?;MEAS:CURR?;MEAS:POW?')
-# Entladen: inst.write('SINK:CURR ' + str(Curr))
-# Laden: inst.write('CURR ' + str(Curr))
-
-# Allgemeine Variabeln
-# Abfragen oder aus Datei importieren
-version = 0.001
-
-# Funktionen
-# Speichergeschichten
-def createfile(ts):
-    if not os.path.exists('data'):
-        os.makedirs('data')
+import queue,threading, os, time
+from gui import Gui
+from ea import EA
+        
+def cycler(dataq,settings):    
+    EA1 = EA(settings['Allgemein'],dataq)
+    print(settings['Allgemein'])
+    print(settings['Zyklisieren'])
     
-    csvpath = "data/" + str(createfilename(ts))
-    return csvpath
-
-# Dateinamen generieren
-def createfilename(ts):
-    date = str(ts).split(" ")
-    name = str(date[0]) + " - Zyklus.csv"
-    return name
-
-# Speichern der Daten
-def save(data,csvpath):
-    with open(csvpath, "a") as csvfile:# we write row by row and element by element; "a" for append 
-                csvfile.write(data + "\n")
-# Timestamp                
-def gettime():
-    dt = datetime.now() #ts = datetime.timestamp(dt)
-    return dt
-
-# Formatierungsgeschichten
-# Einheit entfernen 
-def nounit(data):
-    value = str(data).split(" ")
-    return float(value[0])
-
-# Neu setzen der Stromstärken beim Laden und Entladen
-# Wert verstellt sich durch CV
-def setpara(ccurr,dcurr):
-    inst.write('SINK:CURR ' + str(dcurr))
-    inst.write('CURR ' + str(ccurr))
+    if settings['Innenwiderstand']['ires_check'] == True:
+        print(settings['Innenwiderstand'])
+        EA1.test_ires(settings['Innenwiderstand'])
+    else:
+        print("Kein Innenwiderstandstest gewünscht")
+        pass
     
-# Datenstring erstellen
-def datastr():
-    ts = gettime()
-    csvpath = createfile(ts)
-    data = str(inst.query('MEAS:VOLT?;MEAS:CURR?')).split(";")
-    v = nounit(data[0])
-    i = nounit(data[1])
-    #print(str(ts) + ";" + str(v) + ";" + str(i))
-    save(str(ts) + ";" + str(v) + ";" + str(i),csvpath)
-    return v,i
+    if settings['Zyklisieren']['cycle_check'] == True and settings['Zyklisieren']['cycle_watt_check'] == False:
+        print(settings['Zyklisieren'])
+        EA1.test_cycle(settings['Zyklisieren'])
+    else:
+        print("Keine Zyklisierung der Zelle gewünscht")
+        pass
+    
+    if settings['Zyklisieren']['cycle_check'] == True and settings['Zyklisieren']['cycle_watt_check'] == True:
+        print(settings['Zyklisieren'])
+        watt = read_cycle()
+        print(watt)
+        EA1.test_watt_cycle(settings['Zyklisieren'],watt)
+    else:
+        print("Keine Watt Zyklisierung der Zelle gewünscht")
+        pass
+    
+    if settings['Rescue Charge']['rescue_check'] == True:
+        print(settings['Rescue Charge'])
+        EA1.rescuecharge(settings['Rescue Charge']['rescue_volt'],settings['Rescue Charge']['rescue_cutoff'])
+    else:
+        print("Keine Aufladung zum schonen der Zelle gewünscht")
+        pass
+    
+def speichern(dataq, dateiname):
+    folder = "D:/Projekte/EA Hardware/Software/ea-zyklisier-o-tron/data"
+    filename = str(dateiname) + ".csv"
+    
+    if not os.path.exists(folder):
+        os.makedirs(folder)
+        
+    komplett = os.path.join(folder, filename)
+        
+    with open(komplett, 'w') as f:
+        pass
 
-# Laden
-def charge(maxvolt,ccutoff):
-    logging.info("Laden")
-    inst.write('VOLT ' + str(maxvolt))
-    logging.info("Spannung gesetzt")
-    inst.write('OUTP ON')
-    logging.info("Output An")
-    rest(1)
+    print("Running save thread...")
     while True:
-        v,i = datastr()    
-        if i <= float(ccutoff):
-            logging.info("Cut Off Erreicht")
-            inst.write('OUTP OFF')
-            logging.info("Output OFF")
-            return    
-        time.sleep(1)
+        try:
+            data = dataq.get()
+            print("Data: ", data)
+            with open(komplett, "a+") as csvfile:
+                csvfile.write(str(data) + "\n")
+        except Exception as e:
+            print("Error: ", e)
 
-# Entladen
-def discharge(minvolt,dcutoff):
-    logging.info("Entladen")
-    inst.write('VOLT ' + str(minvolt))
-    logging.info("Spannung gesetzt")
-    inst.write('OUTP ON')
-    logging.info("Output On")
-    rest(1)
-    while True:
-        v,i = datastr()
-        if i >= (-abs(float(dcutoff))):
-            logging.info("Cut Off Erreicht")
-            inst.write('OUTP OFF')
-            logging.info("Output OFF")
-            return
-        time.sleep(1)
-        
-# Pause    
-def rest(seconds):
-    logging.info("Pause")
-    for i in range(0,seconds):
-        v,i = datastr()
-        time.sleep(1)
-        
-# Zyklus aus komplett Laden und Entladen        
-def zyklus(maxvolt,minvolt,ccurr,dcurr,ccutoff,dcutoff,crest,drest,cyclenr):
-	print("Zyklus gestartet")
-	for x in range(0,int(cyclenr)): 
-		setpara(ccurr,dcurr)
-		charge(maxvolt,ccutoff)
-		rest(int(crest))
-		discharge(minvolt,dcutoff)
-		rest(int(drest))
-		print("Zyklus Durchlauf " + str(x) + " abgeschlossen")
-	print("Zyklus beendet")
-	
+def read_cycle():
+    print("Reading cycle data...")
+    with open("D:/Projekte/EA Hardware/Software/ea-zyklisier-o-tron/cycle/1Ah Zyklus WLTP.CSV", 'r') as file:
+        data = [float(row.replace(',', '.')) for row in file]
+    return data
 
-# Settingsabfragen
-def askforsettings():
-    while True:
-        maxvolt = input("Batteriespannung Max.: ")
-        minvolt = input("Batteriespannung Min.: ")
-        ccurr = input("Stromstärke Charge Max.: " )
-        dcurr = input("Stromstärke Discharge Max.: " )
-        ccutoff = input("Charge Cutoff: ")
-        dcutoff = input("Discharge Cutoff: ")
-        crest = input("Charge Pause: ")
-        drest = input("Discharge Pause: ")
-        cyclenr = input("Zyklenzahl: ")
-        
-        print(str(maxvolt) + " V Max\n" + str(minvolt) + " V Min\n" + str(ccurr) + " A Laden\n" +
-              str(dcurr) + " A Entladen\n" + str(ccutoff)  + " A Cutoff Laden\n" + str(dcutoff) +
-              " A Cutoff Entladen\n" + str(crest) + " Pausenzeit Laden\n" + str(drest) +
-              " Pausenzeit Entladen\n" + str(cyclenr) + " Anzahl der Zyklen\n")
-    
-        start = input ("GO zum Starten: ")
-        
-        if start == "GO":
-            return maxvolt,minvolt,ccurr,dcurr,ccutoff,dcutoff,crest,drest,cyclenr
-        else:
-            pass
-    
-    
-        
-# Main Programm
-print("Zyklisier-O-Tron " + str(version) + "\n")
-inst.write('SYST:LOCK ON') # AYBABTU https://www.youtube.com/watch?v=ynQdJe48bkE
-maxvolt,minvolt,ccurr,dcurr,ccutoff,dcutoff,crest,drest,cyclenr = askforsettings()
-zyklus(maxvolt,minvolt,ccurr,dcurr,ccutoff,dcutoff,crest,drest,cyclenr)
+def main():
+    dataq = queue.Queue()
 
+    print("Tim-O-Tron\n")
 
+    gui_o_tron = Gui()
+    settings = gui_o_tron.run()
 
+    # Erstellen Sie Threads für die save und cycler Funktionen
+    cycler_thread = threading.Thread(target=cycler, args=(dataq, settings))
+    save_obj_thread = threading.Thread(target=speichern, args=(dataq, settings['Allgemein']['dateiname']))
 
+    cycler_thread.start()
+    save_obj_thread.start()
 
-
-
-# Verbindung beenden
-inst.disconnect()
+if __name__ == "__main__":
+    main()
+ 
